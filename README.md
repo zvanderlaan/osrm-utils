@@ -18,7 +18,8 @@ The easiest way to install this package is to "pip install" via Github.  This re
 
 Alternatively you could clone the repo run pip install locally: 
 
-``` (myenv)$ git clone git@github.com:cattworks-zv/reid-utils.git
+``` 
+    (myenv)$ git clone git@github.com:cattworks-zv/reid-utils.git
     (myenv)$ cd reid-utils
     (myenv)$ python -m pip install .
 ```
