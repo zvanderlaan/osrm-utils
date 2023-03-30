@@ -1,0 +1,8 @@
+name: osrmutils
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - pandas
+  - numpy
+
