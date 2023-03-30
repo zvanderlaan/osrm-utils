@@ -16,10 +16,10 @@ The easiest way to install this package is to "pip install" via Github.  This re
 
 ```(myenv)$ python -m pip install git+ssh://git@github.com/zvanderlaan/osrm-utils.git@v0.1.0#egg=osrmutils```
 
-Alternatively you could clone the repo run pip install locally: 
+Alternatively you could clone the current version and run pip install locally: 
 
 ``` 
-    (myenv)$ git clone git@github.com:cattworks-zv/reid-utils.git
+    (myenv)$ git clone git@github.com:zvanderlaan/osrm-utils.git
     (myenv)$ cd reid-utils
     (myenv)$ python -m pip install .
 ```
