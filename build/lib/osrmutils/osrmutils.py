@@ -3,6 +3,7 @@ import requests
 import numpy as np
 
 
+
 def match(osrm_server, latitudes, longitudes, timestamps=None, bearings=None, radiuses=None,
                        steps='false', geometries='polyline', annotations='false', overview='simplified',  
                        gaps='split', tidy='false', version='v1'):
@@ -50,7 +51,6 @@ def match(osrm_server, latitudes, longitudes, timestamps=None, bearings=None, ra
     resp:  dictionary
         Returns the JSON API response as a dictionary
     """
-
 
     formatted_lat_lon = ''
     for lat, lon in zip(latitudes, longitudes):
@@ -122,14 +122,6 @@ def _mapmatch_custom(osrm_server, latitudes, longitudes, timestamps=None, bearin
                 distances: list of distances of nodes within leg
                 coords: list of coordinates within leg
     """
-
-    # Make sure all iterables have expected indices starting at 0 
-    # (can be side effects if you pass in a series with existing indices, so prevent this)
-    latitudes = list(latitudes)
-    longitudes = list(longitudes)
-    timestamps = list(timestamps) if timestamps is not None else None 
-    bearings = list(bearings) if bearings is not None else None 
-    radiuses = list(radiuses) if radiuses is not None else None
         
     resp = match(osrm_server=osrm_server, latitudes=latitudes, longitudes=longitudes, 
                 timestamps=timestamps, bearings=bearings, radiuses=radiuses,
@@ -137,9 +129,8 @@ def _mapmatch_custom(osrm_server, latitudes, longitudes, timestamps=None, bearin
                 gaps='split', tidy='false', version='v1')
     
     l_data = []
-
-    code = resp.get('code')
-    if code == 'Ok':  
+          
+    if resp['code'] == 'Ok':  
         
         ## 1.  Enumerate over original tracepoints and build a lookup table:
         ##     key = (route_idx, waypoint_idx)
@@ -180,7 +171,7 @@ def _mapmatch_custom(osrm_server, latitudes, longitudes, timestamps=None, bearin
                 # Deduplicate adjacent
                 coords = [coords[i] for i in range(len(coords)) if (i==0) or coords[i] != coords[i-1]]
                 
-                l_rte.append({'from_tp': from_tracepoint_idx, 'to_tp': to_tracepoint_idx, 'route_idx': route_idx, 'leg_idx': leg_idx, 'node_pairs': node_pairs, 'distances': distances, 'coords': coords})
+                l_rte.append({'from_tp': from_tracepoint_idx, 'to_tp': to_tracepoint_idx, 'route_idx': route_idx, 'leg_idx': leg_idx, 'node_pair': node_pairs, 'distances': distances, 'coords': coords})
                
         
         # Make sure final dataframe has all possible tracepoints -- even those that weren't matched (use left join)
@@ -189,14 +180,8 @@ def _mapmatch_custom(osrm_server, latitudes, longitudes, timestamps=None, bearin
         df_rte = pd.merge(df_rts_all, df_rte, on=['from_tp', 'to_tp'], how='left')
      
         df_tp = pd.DataFrame(l_tp)
-    
-    # query not okay
-    else:
-        df_tp = None 
-        df_rte = None
-  
-
-    return df_tp, df_rte, code
+        
+        return df_tp, df_rte
 
 
 def mapmatch_custom(osrm_server, latitudes, longitudes, timestamps=None, bearings=None, radiuses=None, max_matching_size=100):
@@ -246,49 +231,28 @@ def mapmatch_custom(osrm_server, latitudes, longitudes, timestamps=None, bearing
                 coords: list of coordinates within leg
 
     """
-    # Make sure all iterables have expected indices starting at 0 
-    # (can be side effects if you pass in a series with existing indices, so prevent this)
-    latitudes = list(latitudes)
-    longitudes = list(longitudes)
-    timestamps = list(timestamps) if timestamps is not None else None 
-    bearings = list(bearings) if bearings is not None else None 
-    radiuses = list(radiuses) if radiuses is not None else None
-        
     
     l_tp = []
     l_rte = []
-    l_code = []
 
     n_waypoints = len(latitudes)
-
-    query_idx = 0
-
-    while True:
-
-        lower_idx = query_idx*(max_matching_size-1) # subtract 1 to start with the last pt of previous iter
-        upper_idx = min(lower_idx+max_matching_size, n_waypoints)
-        
-        print('lower_idx: {}, upper_idx: {}'.format(lower_idx, upper_idx))
+    iterations = int(np.ceil(n_waypoints/max_matching_size))  # = 1 if n_waypoints < max_matching_size
+    for i in range(iterations):
+        lower_idx = i*max_matching_size
+        upper_idx = min((i+1)*max_matching_size, n_waypoints)
+        #print('lower_idx: {}, upper_idx: {}'.format(lower_idx, upper_idx))
         _latitudes = latitudes[lower_idx:upper_idx]
         _longitudes = longitudes[lower_idx:upper_idx]
         _timestamps = timestamps[lower_idx:upper_idx] if timestamps is not None else None
         _bearings = bearings[lower_idx:upper_idx] if bearings is not None else None
         _radiuses = radiuses[lower_idx:upper_idx] if radiuses is not None else None
-        _df_tp, _df_rte, code = _mapmatch_custom(osrm_server, _latitudes, _longitudes, _timestamps, _bearings, _radiuses)
-        
-        l_code.append(code)
-
-        if code == 'Ok':
-            # add index to specify the iteration
-            _df_tp.insert(0, 'query_idx', query_idx)
-            _df_rte.insert(0, 'query_idx', query_idx)
-            l_tp.append(_df_tp)
-            l_rte.append(_df_rte)
-        
-        if upper_idx == n_waypoints:
-            break
-        query_idx += 1
-
-    df_tp = pd.concat(l_tp).reset_index(drop=True) if len(l_tp) > 0 else None
-    df_rte = pd.concat(l_rte).reset_index(drop=True) if len(l_rte) > 0 else None
-    return df_tp, df_rte, l_code
+        _df_tp, _df_rte = _mapmatch_custom(osrm_server, latitudes, longitudes, timestamps, bearings, radiuses)
+        # add index to specify the iteration
+        _df_tp.insert(0, 'query_idx', i)
+        _df_rte.insert(0, 'query_idx', i)
+        l_tp.append(_df_tp)
+        l_rte.append(_df_rte)
+    
+    df_tp = pd.concat(l_tp).reset_index(drop=True)
+    df_rte = pd.concat(l_rte).reset_index(drop=True)
+    return df_tp, df_rte
