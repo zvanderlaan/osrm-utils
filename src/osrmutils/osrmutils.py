@@ -2,6 +2,7 @@ import pandas as pd
 import requests
 import numpy as np
 
+iteration = 0
 
 def match(osrm_server, latitudes, longitudes, timestamps=None, bearings=None, radiuses=None,
                        steps='false', geometries='polyline', annotations='false', overview='simplified',  
@@ -81,6 +82,8 @@ def match(osrm_server, latitudes, longitudes, timestamps=None, bearings=None, ra
 
 def _mapmatch_custom(osrm_server, latitudes, longitudes, timestamps=None, bearings=None, radiuses=None):
     
+    global TMP;
+
     """ Performs map matching using OSRM matching service with specific parameters and postprocesses the 
         results to return pandas dataframes for (a) snapped tracepoints and (b) routes.  
         Intented to be called by mapmatch_custom function (without leading underscore), which wraps this
@@ -138,6 +141,8 @@ def _mapmatch_custom(osrm_server, latitudes, longitudes, timestamps=None, bearin
     
     l_data = []
 
+    global iteration 
+    
     code = resp.get('code')
     if code == 'Ok':  
         
@@ -146,48 +151,63 @@ def _mapmatch_custom(osrm_server, latitudes, longitudes, timestamps=None, bearin
         d_tracepoint_index = {}
         l_tp = []
         for tracepoint_idx, tracepoint in enumerate(resp['tracepoints']):
-            route_idx = tracepoint['matchings_index']
-            waypoint_idx = tracepoint['waypoint_index']
-            d_tracepoint_index[(route_idx, waypoint_idx)] = tracepoint_idx  
+            snap_lon, snap_lat = None, None
+            if tracepoint is not None:
+                route_idx = tracepoint['matchings_index'] 
+                waypoint_idx = tracepoint['waypoint_index']
+                d_tracepoint_index[(route_idx, waypoint_idx)] = tracepoint_idx 
+                snap_lon =  tracepoint['location'][0] 
+                snap_lat =  tracepoint['location'][1] 
             tstamp = timestamps[tracepoint_idx] if timestamps is not None else None
-            l_tp.append({'tp_idx': tracepoint_idx, 'lon': longitudes[tracepoint_idx], 'lat': latitudes[tracepoint_idx], 'snap_lon': tracepoint['location'][0], 'snap_lat': tracepoint['location'][1], 'timestamp': tstamp})
-        
+            l_tp.append({'tp_idx': tracepoint_idx, 'lon': longitudes[tracepoint_idx], 'lat': latitudes[tracepoint_idx], 'snap_lon': snap_lon, 'snap_lat': snap_lat, 'timestamp': tstamp})
+
+
         l_rte = []
         for route_idx, route in enumerate(resp['matchings']):
             for leg_idx, leg in enumerate(route['legs']):
                 
                 # A leg is defined between two matched waypoints. When you have more than one leg in a trip, 
-                # the last waypoint in one leg  is the same as the first waypoint in the next legs.  If you're
-                # trying to chain the legs together -- and associated node pairs/distances, you need to 
-                # first de-deuplicate these repeated points 
-                
-                # ** LOGIC **
-                # If leg_idx == 0 (first leg of the route) --> Use all nodepairs (first and last nodepairs bracket first/last waypoints)
-                # If leg_idex > 0 (sucessive legs) --> Drop first nodepair and use the rest (the dropped nodepair brackets the 
-                #                                      waypoint that was already used in the previous leg)
+                # the last waypoint in one leg  is the same as the first waypoint in the next legs. 
+
                 from_wp_idx = leg_idx
-                to_wp_idx = leg_idx + 1
+                to_wp_idx = leg_idx + 1                
+
                 from_tracepoint_idx = d_tracepoint_index[(route_idx, from_wp_idx)]
                 to_tracepoint_idx = d_tracepoint_index[(route_idx, to_wp_idx)]
-           
+
                 nodes = leg['annotation']['nodes']                 
                 node_pairs = [(nodes[i], nodes[i+1]) for i in range(len(nodes)-1)] 
                 distances = [round(i, 3) for i in leg['annotation']['distance']]
+                # Collect coordinates from each step, which represents the geometry of the path to the 
+                # next step in the leg.
                 coords = []
                 for step in leg['steps']:
                     assert step['geometry']['type'] == 'LineString', "unexpected geometry type"
                     coords.extend(step['geometry']['coordinates'])
-                # Deduplicate adjacent
+                # Unclear whether this is a bug or not, but it appears that in rare cases the last point
+                # is not contained in the geometry.  This coordinate will however be present in the 
+                # last step's maneuver location.
+                coords.append(leg['steps'][-1]['maneuver']['location'])
+                # Deduplicate points that were repeated when stiching together goemetries from different steps
                 coords = [coords[i] for i in range(len(coords)) if (i==0) or coords[i] != coords[i-1]]
                 
                 l_rte.append({'from_tp': from_tracepoint_idx, 'to_tp': to_tracepoint_idx, 'route_idx': route_idx, 'leg_idx': leg_idx, 'node_pairs': node_pairs, 'distances': distances, 'coords': coords})
                
         
-        # Make sure final dataframe has all possible tracepoints -- even those that weren't matched (use left join)
+        # Make sure final route dataframe has all possible tracepoints -- even those that weren't matched (use left join)
         df_rts_all = pd.DataFrame({'from_tp': [i for i in range(len(latitudes)-1)], 'to_tp': [i+1 for i in range(len(latitudes)-1)]})
         df_rte = pd.DataFrame(l_rte)
         df_rte = pd.merge(df_rts_all, df_rte, on=['from_tp', 'to_tp'], how='left')
-     
+        df_rte['matched'] = np.where(df_rte['node_pairs'].notnull(), True, False)
+        # Fill unmatched route_idx and leg_idx 
+        df_rte['route_idx'] = df_rte['route_idx'].astype('Int64') # Nullable int type
+        df_rte['leg_idx'] = df_rte['leg_idx'].astype('Int64') # Nullable int type
+        # Fill unmatched list columns with empty lists
+        df_rte['node_pairs'] = df_rte['node_pairs'].fillna("").apply(list)
+        df_rte['distances'] = df_rte['distances'].fillna("").apply(list)
+        df_rte['coords'] = df_rte['coords'].fillna("").apply(list)
+        df_rte = df_rte[['from_tp', 'to_tp', 'matched', 'route_idx', 'leg_idx', 'node_pairs', 'distances', 'coords']]
+
         df_tp = pd.DataFrame(l_tp)
     
     # query not okay
@@ -195,7 +215,6 @@ def _mapmatch_custom(osrm_server, latitudes, longitudes, timestamps=None, bearin
         df_tp = None 
         df_rte = None
   
-
     return df_tp, df_rte, code
 
 
@@ -268,12 +287,13 @@ def mapmatch_custom(osrm_server, latitudes, longitudes, timestamps=None, bearing
         lower_idx = query_idx*(max_matching_size-1) # subtract 1 to start with the last pt of previous iter
         upper_idx = min(lower_idx+max_matching_size, n_waypoints)
         
-        print('lower_idx: {}, upper_idx: {}'.format(lower_idx, upper_idx))
+        #print('lower_idx: {}, upper_idx: {}'.format(lower_idx, upper_idx))
         _latitudes = latitudes[lower_idx:upper_idx]
         _longitudes = longitudes[lower_idx:upper_idx]
         _timestamps = timestamps[lower_idx:upper_idx] if timestamps is not None else None
         _bearings = bearings[lower_idx:upper_idx] if bearings is not None else None
         _radiuses = radiuses[lower_idx:upper_idx] if radiuses is not None else None
+
         _df_tp, _df_rte, code = _mapmatch_custom(osrm_server, _latitudes, _longitudes, _timestamps, _bearings, _radiuses)
         
         l_code.append(code)
@@ -288,6 +308,8 @@ def mapmatch_custom(osrm_server, latitudes, longitudes, timestamps=None, bearing
         if upper_idx == n_waypoints:
             break
         query_idx += 1
+        global iteration 
+        iteration += 1
 
     df_tp = pd.concat(l_tp).reset_index(drop=True) if len(l_tp) > 0 else None
     df_rte = pd.concat(l_rte).reset_index(drop=True) if len(l_rte) > 0 else None
